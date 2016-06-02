@@ -2130,7 +2130,7 @@ def backup_to_s3(cluster,collection,bucket='solr-scale-tk',dry_run=0,ebs=None):
                     backupDir = '%s/cloud%s/solr/backups/%s' % (remoteSolrDir, solrPort, collection)
                     tars2s3 = '#!/bin/bash\n'
                     tars2s3 += 'cd '+backupDir+';'
-                    tars2s3 += 'find . -name "shard*" -type d -exec s3cmd --progress --recursive put {} s3://solr-scale-tk/%s \;\n' % pfx
+                    tars2s3 += 'find . -name "shard*" -type d -exec s3cmd --progress --recursive put {} s3://%s/%s \;\n' % (bucket,pfx)
                     run('rm -f '+backupDir+'/s3put.sh')
                     _fab_append(backupDir+'/s3put.sh', tars2s3)
                     if dryRun is False:
