@@ -1567,7 +1567,7 @@ export SOLR_JAVA_MEM="%s"
                 remoteStartCmd = '%s start -cloud -p %s -d %s' % (binSolrScript, solrPort, solrDir)
                 _status('Running start on '+host+': ' + remoteStartCmd)
                 run(remoteSolrDir+'/bin/solr stop -p '+solrPort+' || true')
-                startScriptOutput = remoteSolrDir+'/cloud84/logs/solr-startup.out'
+                startScriptOutput = remoteSolrDir+'/'+solrDir+'/solr-startup.out'
                 _runbg(remoteStartCmd, startScriptOutput)
                 time.sleep(2)
                 _info('Started Solr on port '+solrPort+' on '+host+'; check '+startScriptOutput+' if Solr is not running.')
