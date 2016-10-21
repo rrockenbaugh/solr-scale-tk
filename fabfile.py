@@ -31,10 +31,9 @@ import boto.vpc
 CLUSTER_TAG = 'cluster'
 USERNAME_TAG = 'username'
 INSTANCE_STORES_TAG = 'numInstanceStores'
-AWS_PV_AMI_ID = 'ami-5d126438'
-AWS_HVM_AMI_ID = 'ami-7ab1ea10' # ami-ebec998b
+AWS_HVM_AMI_ID = 'ami-f11b48e6'
 AWS_AZ = 'us-east-1b'
-AWS_INSTANCE_TYPE = 'm3.medium'
+AWS_INSTANCE_TYPE = 'r3.large'
 AWS_SECURITY_GROUP = 'solr-scale-tk'
 AWS_KEY_NAME = 'solr-scale-tk'
 ssh_user = 'ec2-user'
@@ -50,23 +49,24 @@ _config['provider'] = 'ec2'
 _config['user_home'] = user_home
 _config['ssh_keyfile_path_on_local'] = ssh_keyfile_path_on_local
 _config['ssh_user'] = ssh_user
-_config['solr_java_home'] = '${user_home}/jdk1.8.0_77'
-_config['solr_tip'] = '${user_home}/solr-5.4.1'
+_config['solr_java_home'] = '${user_home}/jdk1.8.0_102'
+_config['solr_tip'] = '${user_home}/solr-5.5.2'
 _config['zk_home'] = '${user_home}/zookeeper-3.4.6'
 _config['zk_data_dir'] = zk_data_dir
 _config['sstk_cloud_dir'] = '${user_home}/cloud'
 _config['SSTK_ENV'] = '${sstk_cloud_dir}/' + ENV_SCRIPT
 _config['SSTK'] = '${sstk_cloud_dir}/' + CTL_SCRIPT
-_config['AWS_PV_AMI_ID'] = AWS_PV_AMI_ID
 _config['AWS_HVM_AMI_ID'] = AWS_HVM_AMI_ID
 _config['AWS_AZ'] = AWS_AZ
 _config['AWS_SECURITY_GROUP'] = AWS_SECURITY_GROUP
 _config['AWS_INSTANCE_TYPE'] = AWS_INSTANCE_TYPE
 _config['AWS_KEY_NAME'] = AWS_KEY_NAME
 _config['fusion_home'] = '${user_home}/fusion'
+_config['fusion_vers'] = '2.4.2'
 
-instanceStoresByType = { 'm1.small':0, 'm3.medium':1, 'm3.medium':1, 'm3.large':1, 'm3.xlarge':2,
-                        'm3.2xlarge':2, 'i2.4xlarge':4,'i2.2xlarge':2, 'i2.8xlarge':8,
+instanceStoresByType = {'m2.small':0, 't2.medium':0, 't2.large':0, 't2.xlarge':0,
+                        'm3.medium':1, 'm3.large':1, 'm3.xlarge':2, 'm3.2xlarge':2,
+                        'i2.4xlarge':4,'i2.2xlarge':2, 'i2.8xlarge':8,
                         'r3.large':1, 'r3.xlarge':1, 'r3.2xlarge':1, 'r3.4xlarge':1, 'c3.2xlarge':2 }
 
 class _HeadRequest(urllib2.Request):
@@ -750,7 +750,7 @@ def _get_solr_java_memory_opts(instance_type, numNodesPerHost):
             showWarn = True
             mx = '3g'
     elif instance_type == 'r3.2xlarge':
-        mx = '12g'
+        mx = '16g'
     elif instance_type == 'i2.4xlarge' or instance_type == 'r3.4xlarge':
         if numNodesPerHost <= 4:
             mx = '12g'
@@ -935,7 +935,7 @@ def _setup_instance_stores(hosts, numInstStores, ami, xdevs):
                     sudo("sh -c 'if [ -d \"/mnt\" ]; then umount /mnt || true; rm -rf /mnt; fi'")
                 # mount the instance store device on the correct /vol disk
                 if _fab_exists('/vol%d' % v) is False:
-                    sudo('mkfs -t ext4 /dev/%s || true' % xdevs[v])
+                    sudo('mkfs -F -t ext4 /dev/%s || true' % xdevs[v])
                     sudo('mkdir /vol%d' % v)
                     sudo('echo "/dev/%s /vol%d ext4 defaults 0 2" >> /etc/fstab' % (xdevs[v], v))
                     sudo('mount /vol%d' % v)
@@ -1038,7 +1038,7 @@ def _estimate_indexing_throughput(cluster, collection, usePipeline=False):
     hosts = _lookup_hosts(cluster)
     timestampField = 'indexed_at_tdt'
 
-    if usePipeline:
+    if str(usePipeline) == "True":
         solr = pysolr.Solr('http://%s:8765/api/v1/query-pipelines/%s-default/collections/%s' % (hosts[0], collection, collection), timeout=10)
     else:
         solr = pysolr.Solr('http://%s:8984/solr/%s' % (hosts[0], collection), timeout=10)
@@ -1086,7 +1086,7 @@ def _wait_for_emr_step_to_finish(emr, job_flow_id, stepId, stepName, maxWaitSecs
 
     return stepState
 
-def _wait_to_see_fusion_proxy_up(host, maxWaitSecs=30):
+def _wait_to_see_fusion_proxy_up(cluster, host, maxWaitSecs=30):
     waitTime = 0
     startedAt = time.time()
     isRunning = False
@@ -1107,35 +1107,49 @@ def _wait_to_see_fusion_proxy_up(host, maxWaitSecs=30):
 def _is_fusion_proxy_up(hostAndPort):
     isProxyUp = False
     try:
-        urllib2.urlopen(_HeadRequest('http://%s/' % hostAndPort))
+        urllib2.urlopen('http://%s/' % hostAndPort+'/api')
         _info('Fusion proxy at ' + hostAndPort + ' is online.')
         isProxyUp = True
+    except urllib2.HTTPError as e:
+        print(str(e))
+        isProxyUp = False
     except:
+        print(str(sys.exc_info()[0]))
         isProxyUp = False
 
     return isProxyUp
 
-def _wait_to_see_fusion_api_up(apiHost, maxWait):
+def _wait_to_see_fusion_api_up(cluster, apiHost, maxWait):
     waitTime = 0
     startedAt = time.time()
     isRunning = False
-    _status('Will wait up to '+str(maxWait)+' secs to see Fusion API service up on host: '+apiHost)
+
+    if maxWait > 10:
+        _status('Will wait up to '+str(maxWait)+' secs to see Fusion API service up on host: '+apiHost)
+
+    fusionVers = _env(cluster, 'fusion_vers', defaultValue='2.4.2')
+    path = 'system/status' if fusionVers.startswith('3.') else 'system/ping'
     while isRunning is False and waitTime < int(maxWait):
         isRunning = False
         try:
-            pingResp = _fusion_api(apiHost, 'system/ping')
-        except:
-            _warn('ping '+apiHost+' failed due to '+str(sys.exc_info()[0])+'! Check status of Fusion and retry')
-            pingResp = 'error'
-
-        if pingResp == 'pong':
+            statusResp = _fusion_api(apiHost, path)
+            # if we get here, api is responding ...
             isRunning = True
+        except:
+            # make it JSON
+            statusResp = '{ "error": "'+str(sys.exc_info()[0])+'" }'
+            _warn('ping '+apiHost+' failed due to '+statusResp+'! Check status of Fusion and retry')
+
+        if isRunning:
             break
 
         if isRunning is False and int(maxWait) >= 15:
             time.sleep(15)
             waitTime = round(time.time() - startedAt)
             _status('Waited %d seconds so far to verify Fusion API is running on %s.' % (waitTime, apiHost))
+        else:
+            _status('Fusion API service is not running due to: '+statusResp)
+            break
 
     return isRunning
 
@@ -1241,8 +1255,11 @@ def new_ec2_instances(cluster,
     if instance_type is None:
         instance_type = _env(cluster, 'AWS_INSTANCE_TYPE')
 
+    if instance_type.startswith('m1.'):
+        _fatal(instance_type+" instances are not supported anymore!")
+
     if ami is None:
-        ami = _env(cluster, 'AWS_PV_AMI_ID')
+        ami = _env(cluster, 'AWS_HVM_AMI_ID')
 
     if key is None:
         key = _env(cluster, 'AWS_KEY_NAME')
@@ -1307,10 +1324,7 @@ def new_ec2_instances(cluster,
 
     # TODO: this is hacktastic! Need a mapping from /dev/sd# to /dev/xvd#
     devs = ['sdb','sdc','sdd','sde']
-    xdevs = ['xvdf','xvdg','xvdh','xvdi']
-    
-    if ami == hvmAmiId:
-        xdevs = ['xvdb','xvdc','xvdd','xvde']
+    xdevs = ['xvdb','xvdc','xvdd','xvde']
 
     bdm = None   
     if setupInstanceStores is True and numStores > 0:
@@ -1369,7 +1383,7 @@ def new_ec2_instances(cluster,
     now = datetime.datetime.utcnow()
     nowStr = now.strftime("%Y%m%d-%H%M%S")
     if purpose is None:
-        purpose = '?unknown?'
+        purpose = 'Solr/Fusion performance testing in a multi-node cluster.'
     description = 'Launched on '+nowStr+' by '+username+' for '+purpose
 
     customTagsJson = None
@@ -1419,7 +1433,7 @@ def new_ec2_instances(cluster,
 
     # don't return from this operation until we can SSH into each node
     # and some hvm (esp the larger instance types) can take longer to provision
-    waitSecs = 360 if ami == hvmAmiId else 180
+    waitSecs = 360
     if _verify_ssh_connectivity(hosts, waitSecs) is False:
         _fatal('Failed to verify SSH connectivity to all hosts!')
 
@@ -1832,6 +1846,10 @@ def mine(user=None):
         if usertag is None:
             usertag = '?user?'
 
+        nameTag = inst.__dict__['tags']['Name']
+        if nameTag is None:
+            nameTag = '?'
+
         if byUser.has_key(usertag) is False:
             byUser[usertag] = {}
         
@@ -1846,8 +1864,8 @@ def mine(user=None):
 
         if inst.launch_time:
             upTime = _uptime(inst.launch_time)
-            clusters[cluster].append('%s: %s (%s %s%s)' %
-              (inst.public_dns_name, key, inst.instance_type, inst.state, upTime))
+            clusters[cluster].append('%s: %s / %s / %s (%s %s%s)' %
+              (inst.public_dns_name, key, inst.private_ip_address, nameTag, inst.instance_type, inst.state, upTime))
 
         clusterList.append(cluster)
 
@@ -2576,52 +2594,6 @@ def reload_collection(cluster,collection):
     results = solr.search('*:*')                
     _info('Restore '+collection+' complete. Docs: '+str(results.hits))
     healthcheck(cluster,collection)
-    
-def jmeter(solrCluster,jmxfile,jmeterCluster=None,collection=None,propertyfile=None,depsfolder=None,runname='jmeter-test'):
-    """
-    Upload and run a JMeter test plan against your cluster.
-    """
-    homeDir = _env(solrCluster, 'user_home')
-    jmeterDir = '%s/jmeter-2.11' % homeDir
-    jmeterTestDir = '%s/%s' % (homeDir, runname)
-    jmeterTestLogDir = '%s/logs' % jmeterTestDir
-    jmeterTestLogFile = '%s/jmeter.log' % jmeterTestLogDir
-
-    if collection is None:
-        _warn('No collection name specified, assuming same as solr cluster name')
-        collection = solrCluster
-    if jmeterCluster is None:
-        _warn('No jmeter cluster name specified, assuming same as solr cluster name')
-        jmeterCluster = solrCluster
-
-    cloud = _provider_api()
-    hosts = _cluster_hosts(cloud, jmeterCluster)
-    _info('Preparing to execute jmeter tests on cluster = %s and host = %s' % (jmeterCluster, hosts[0]))
-
-    zkHostStr = _read_cloud_env(solrCluster)['ZK_HOST'] # get the zkHost from the env on the server
-    _info("Using ZK host string: %s" % zkHostStr)
-
-    with settings(host_string=hosts[0]):
-        run ('mkdir -p %s' % jmeterTestLogDir)
-        # put ('target/solr-scale-tk-0.1.jar', '%s/lib/ext/' % jmeterDir)
-        if propertyfile is not None:
-            put (propertyfile, '%s/.' % jmeterTestDir)
-        if depsfolder is not None:
-            local ('tar -cvf dependencies.tar.gz -C %s %s' % (os.path.dirname(os.path.abspath(depsfolder)), os.path.basename(os.path.abspath(depsfolder))))
-            put ('dependencies.tar.gz', jmeterTestDir)
-            with cd(jmeterTestDir):
-                run ('tar -xvf dependencies.tar.gz')
-            local ('rm dependencies.tar.gz')
-        put(jmxfile, jmeterTestDir)
-        jmxFileName = os.path.basename(jmxfile)
-        if propertyfile is not None:
-            propFileName = os.path.basename(propertyfile)
-            with cd(jmeterTestDir):
-                run('export JVM_ARGS=\'-Dcommon.defaultCollection=%s -Dcommon.endpoint=%s\';%s/bin/jmeter -q %s -n -t %s -j %s' % (collection, zkHostStr, jmeterDir, propFileName, jmxFileName, jmeterTestLogFile))
-        else:
-            with cd(jmeterTestDir):
-                run('export JVM_ARGS=\'-Dcommon.defaultCollection=%s -Dcommon.endpoint=%s\';%s/bin/jmeter -n -t %s -j %s' % (collection, zkHostStr, jmeterDir, jmxFileName, jmeterTestLogFile))
-        get(jmeterTestLogDir, '.')
 
 def restart_node(cluster,port,n=0):
     """
@@ -2811,7 +2783,7 @@ def fusion_new_collection(cluster, name, rf=1, shards=1, conf='cloud'):
     zkHost = _read_cloud_env(cluster)['ZK_HOST'] # get the zkHost from the env on the server
     _fusion_api(hosts[0], 'collections', 'POST', json)
 
-def fusion_start(cluster,api=None,ui=1,connectors=1,yjp_path=None,apiJavaMem=None):
+def fusion_start(cluster,api=None,ui=1,connectors=1,smasters=1,yjp_path=None,apiJavaMem=None):
     """
     Start Fusion services across the specified cluster.
 
@@ -2833,17 +2805,23 @@ def fusion_start(cluster,api=None,ui=1,connectors=1,yjp_path=None,apiJavaMem=Non
     fusionConf = fusionHome+'/conf'
     fusionLogs = fusionHome+'/var/log'
 
-    apiJavaOpts = '-Xmx512m' if apiJavaMem is None else '-Xmx'+apiJavaMem
+    apiJavaOpts = '-Xmx1g' if apiJavaMem is None else '-Xmx'+apiJavaMem
 
     # create the fusion.in.sh include file
     zkHost = _read_cloud_env(cluster)['ZK_HOST'] # get the zkHost from the env on the server
     # sstk starts Solr on 8984, so we need to change the connectors port
-    fusionConfigSh = ('''
+    fusionConfigSh = ''
+
+    fusionVers = _env(cluster, 'fusion_vers', defaultValue='2.4.2')
+
+    if fusionVers.startswith("3.") is False:
+        fusionConfigSh = ('''
 # Auto-generated config created by solr-scale-tk
 API_PORT=8765
 API_STOP_PORT=7765
 API_STOP_KEY=fusion
-API_JAVA_OPTIONS=(%s -Xss256k -Dapple.awt.UIElement=true)
+RMI_HOST=`curl -s http://169.254.169.254/latest/meta-data/public-hostname`
+API_JAVA_OPTIONS=(%s -Xss256k -Djava.rmi.server.hostname=$RMI_HOST -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.port=18765 -Dcom.sun.management.jmxremote.rmi.port=18765 -Dapple.awt.UIElement=true)
 
 CONNECTORS_PORT=8763
 CONNECTORS_STOP_PORT=7763
@@ -2875,6 +2853,7 @@ SPARK_WORKER_JAVA_OPTIONS=(-Xmx2g -XX:MaxPermSize=256m -Dapple.awt.UIElement=tru
 # The FUSION_SOLR_ZK is used to locate the Solr cluster where Fusion
 # creates its internal collections (logs, metrics etc), and to change
 # solr configuration if expliticly asked via our APIs.
+ZOOKEEPER_PORT=2181
 FUSION_ZK=%s
 FUSION_SOLR_ZK=%s
 
@@ -2908,14 +2887,83 @@ GC_TUNE=(-XX:NewRatio=3 \
 	-XX:+ParallelRefProcEnabled)
 ''' % (apiJavaOpts, apiJavaOpts, zkHost, zkHost))
 
-    if yjp_path is not None:
-        fusionConfigSh += '\nAPI_JAVA_OPTIONS="$API_JAVA_OPTIONS -agentpath:'+yjp_path+'/bin/linux-x86-64/libyjpagent.so"\n'
+        if yjp_path is not None:
+            fusionConfigSh += '\nAPI_JAVA_OPTIONS="$API_JAVA_OPTIONS -agentpath:'+yjp_path+'/bin/linux-x86-64/libyjpagent.so"\n'
 
+    slashAt = zkHost.find('/')
+    fusionZk = zkHost if slashAt == -1 else zkHost[0:slashAt]
+    print('zkHost=%s, fusionZk=%s' % (zkHost, fusionZk))
+
+    agentPropsTemplate = """
+# Some defaults across all processes
+zk.connect=%s
+default.zk.connect=%s
+solr.zk.connect=%s
+default.solrZk.connect=%s
+
+# garbage collection options can be "cms", "g1", "throughput" or "parallel", "serial" or "none"
+default.gc = cms
+# enable garbage collection logs
+default.gcLog = true
+# number of seconds agent checks for a service to be up and ready before declaring failure
+default.startSecs = 180
+# supervisor's settings
+# set to "none" to disable supervisor
+default.supervision.type=standard
+default.supervision.startRetries=3
+default.supervision.pauseBeforeRestartSecs=3
+
+# Agent process
+agent.port = 8091
+
+# API service
+api.port = 8765
+api.stopPort = 7765
+api.jvmOptions=%s -Xss256k -Djava.rmi.server.hostname=%s -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.port=18765 -Dcom.sun.management.jmxremote.rmi.port=18765 -Dapple.awt.UIElement=true
+
+# Connectors service
+connectors.port = 8763
+connectors.stopPort = 7763
+connectors.jvmOptions=-Xmx1g -Xss256k
+
+# Zookeeper
+zookeeper.port = 9983
+zookeeper.start = true
+zookeeper.jvmOptions=-Xmx256m
+
+# Solr
+solr.port = 8983
+solr.stopPort = 7983
+solr.jvmOptions = -Xmx2g -Xss256k
+
+# Spark master
+spark-master.port = 8766
+spark-master.uiPort = 8767
+spark-master.jvmOptions = -Xmx512m
+
+# Spark worker
+spark-worker.port = 8769
+spark-worker.uiPort = 8770
+spark-worker.jvmOptions = -Xmx1g
+
+# UI
+ui.port = 8764
+ui.stopPort = 7764
+ui.jvmOptions = -Xmx512m
+"""
+
+    cloudDir = _env(cluster, 'sstk_cloud_dir')
     for host in hosts:
         with settings(host_string=host), hide('output','running'):
-            run('mv '+fusionConf+'/config.sh '+fusionConf+'/config.sh.bak')
+            run('mv '+fusionConf+'/config.sh '+fusionConf+'/config.sh.bak || true')
             _status('Uploading config.sh includes file to '+host)
             _fab_append(fusionConf+'/config.sh', fusionConfigSh)
+            fusionAgentProps = agentPropsTemplate % (fusionZk, fusionZk, zkHost, zkHost, apiJavaOpts, host)
+            run('mv '+fusionConf+'/fusion.properties '+fusionConf+'/fusion.properties.bak || true')
+            _status('Uploading fusion.properties file to '+host)
+            _fab_append(fusionConf+'/fusion.properties', fusionAgentProps)
+            put('fusion-conf.sh', cloudDir+'/fusion-conf.sh')
+            run('sh '+cloudDir+'/fusion-conf.sh')
 
     # start fusion, ui, connectors
     numApiNodes = int(api)
@@ -2930,30 +2978,26 @@ GC_TUNE=(-XX:NewRatio=3 \
     if numConnectorsNodes > len(hosts):
         _fatal('Cannot start more than %d Connectors nodes!' % len(hosts))
 
-    with settings(host_string=hosts[0]), hide('output', 'running'):
-        run(fusionBin+'/spark-master stop || true')
-        _runbg(fusionBin+'/spark-master restart', fusionLogs+'/spark-master/restart.out')
-        time.sleep(10)
-        _info('Started Spark-Master service on '+hosts[0])
-        run(fusionBin+'/spark-worker stop || true')
-        _runbg(fusionBin+'/spark-worker restart', fusionLogs+'/spark-worker/restart.out')
-        time.sleep(2)
-        _info('Started Spark-Worker service on '+hosts[0])
+    numSparkMasterNodes = int(smasters)
+    if numSparkMasterNodes > len(hosts):
+        _fatal('Cannot start more than %d Spark master nodes!' % len(hosts))
 
-    # start additional Spark Workers on all nodes where there will be an API
-    if numApiNodes > 1:
-        _status('Starting Fusion Spark Worker service on %d nodes.' % numApiNodes)
-        for host in hosts[1:numApiNodes]:
-            with settings(host_string=host), hide('output', 'running'):
-                run(fusionBin+'/spark-worker stop || true')
-                _runbg(fusionBin+'/spark-worker restart', fusionLogs+'/spark-worker/restart.out')
-                time.sleep(5)
-                _info('Started Spark-Worker service on '+host)
-                run(fusionBin+'/spark-master stop || true')
-                _runbg(fusionBin+'/spark-master restart', fusionLogs+'/spark-master/restart.out')
-                time.sleep(2)
-                _info('Started Spark-Master service on '+hosts[0])
+    _status('Starting Fusion Spark Master service on %d nodes.' % numSparkMasterNodes)
+    for host in hosts[0:numSparkMasterNodes]:
+        with settings(host_string=host), hide('output', 'running'):
+            run(fusionBin+'/spark-master stop || true')
+            _runbg(fusionBin+'/spark-master restart', fusionLogs+'/spark-master/restart.out')
+            time.sleep(2)
+            _info('Started Spark Master service on '+host)
 
+    # start Spark Workers on all nodes where there will be an API
+    _status('Starting Fusion Spark Worker service on %d nodes.' % numApiNodes)
+    for host in hosts[0:numApiNodes]:
+        with settings(host_string=host), hide('output', 'running'):
+            run(fusionBin+'/spark-worker stop || true')
+            _runbg(fusionBin+'/spark-worker restart', fusionLogs+'/spark-worker/restart.out')
+            time.sleep(2)
+            _info('Started Spark-Worker service on '+host)
 
     if numApiNodes > 0:
         _status('Starting Fusion API service on %d nodes.' % numApiNodes)
@@ -2985,7 +3029,7 @@ GC_TUNE=(-XX:NewRatio=3 \
                 if fusionUIUrl is None:
                     fusionUIUrl = 'http://'+host+':8764'
 
-    apiIsRunning = _wait_to_see_fusion_api_up(hosts[0], 180)
+    apiIsRunning = _wait_to_see_fusion_api_up(cluster, hosts[0], 180)
     if apiIsRunning is False:
         _fatal('Fusion API not responding on '+hosts[0]+'! Consult the Fusion API log for errors.')
 
@@ -3021,7 +3065,7 @@ def fusion_status(cluster):
             run(fusionHome+'/bin/fusion status')
     cluster_status(cluster)
 
-def fusion_setup(cluster,vers='2.1.0'):
+def fusion_setup(cluster,vers='2.4.2'):
     """
     Downloads and installs the specified Fusion version on a remote cluster; use setup_local for local clusters.
     """
@@ -3057,16 +3101,17 @@ def fusion_setup(cluster,vers='2.1.0'):
 
     _info('\n\nFusion installed on %d hosts' % len(hosts))
 
-def fusion_demo(cluster, n=1, instance_type='m3.large', fusionVers='2.1.0'):
+def fusion_demo(cluster, n=1, instance_type='m3.large'):
     """
     Setup a cluster with SolrCloud, ZooKeeper, and Fusion (API, UI, Connectors)
     """
+    fusionVers = _env(cluster, 'fusion_vers', defaultValue='2.4.2')
     new_solrcloud(cluster,n=n,instance_type=instance_type,auto_confirm=True,purpose='Fusion demo',customTags='{"CostCenter":"eng"}')
     deploy_config(cluster,'perf','cloud')
     fusion_setup(cluster,fusionVers)
     fusion_start(cluster,api=n)
 
-def setup_local(cluster,tip,numSolrNodes=1,solrVers='5.2.1',zkVers='3.4.6',fusionVers=None,overwriteExistingConfig=False):
+def setup_local(cluster,tip,numSolrNodes=1,solrVers='5.5.2',zkVers='3.4.6',fusionVers=None,overwriteExistingConfig=False):
     """
     Downloads Solr, ZooKeeper, and optionally Fusion and then builds a local cluster.
     """
@@ -3105,7 +3150,7 @@ def setup_local(cluster,tip,numSolrNodes=1,solrVers='5.2.1',zkVers='3.4.6',fusio
     solrTip = ('%s/solr-%s' % (localTip, solrVers))
     if os.path.isdir(solrTip) is False:
         solrTgz = 'solr-'+solrVers+'.tgz'
-        solrDownloadUrl = 'http://apache.cs.utah.edu/lucene/solr/'+solrVers+'/'+solrTgz
+        solrDownloadUrl = 'http://archive.apache.org/dist/lucene/solr/'+solrVers+'/'+solrTgz
         solrLocalTgz = localTip+'/'+solrTgz
         if os.path.isfile(solrLocalTgz) is False:
             _status('Downloading Solr '+solrVers)
@@ -3183,12 +3228,12 @@ def emr_new_cluster(cluster, region='us-east-1', subnetid=None, num='4', keep_al
     dict_subnet = {"Instances.Ec2SubnetId":subnetid}
     _info('Launching EMR cluster '+cluster+' in VPC subnet '+subnetid)
     job_flow_id = emr.run_jobflow(cluster,
-                log_uri='s3://emr-logs-'+cluster+'-'+nowStr+'/',
+                log_uri='s3://sstk-dev/emr/emr-logs-'+cluster+'-'+nowStr+'/',
                 master_instance_type='m3.xlarge',
                 slave_instance_type=slave_instance_type,
                 ec2_keyname=keyname,
                 num_instances=int(num)+1,
-                ami_version='3.6.0',
+                ami_version='3.11.0',
                 keep_alive=keep_alive,
                 steps=steps,
                 enable_debugging=True,
@@ -3289,7 +3334,11 @@ def emr_run_indexing_job(emrCluster, solrCluster, collection, pig='s3_to_solr.pi
     nowStr = now.strftime("%Y%m%d-%H%M%S")
 
     stepName = 'pig-solr-'+collection+'-'+nowStr
-    pigFile = 's3://solr-scale-tk/pig/'+pig
+
+    if pig.startswith('s3://'):
+        pigFile = pig
+    else:
+        pigFile = 's3://solr-scale-tk/pig/'+pig
 
     pigArgs = ['-p','INPUT='+input,
                '-p','RED='+str(numReducers),
@@ -3307,7 +3356,7 @@ def emr_run_indexing_job(emrCluster, solrCluster, collection, pig='s3_to_solr.pi
 
     return stepName
 
-def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s3_to_fusion.pig', input='s3://solr-scale-tk/pig/output/syn_sample_5m', batch_size='500', reducers='12', region='us-east-1', pipeline=None, thruProxy=True):
+def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s3_to_fusion.pig', input='s3://solr-scale-tk/pig/output/syn_sample_5m', batch_size='500', reducers='12', region='us-east-1', pipeline=None, thruProxy='True'):
     """
     Schedules a Pig job in the specified EMR cluster to index a dataset from S3 into Fusion.
     """
@@ -3324,7 +3373,7 @@ def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s
     nowStr = now.strftime("%Y%m%d-%H%M%S")
 
     stepName = 'pig-fusion-'+collection+'-'+nowStr
-    if pig.startswith('s3'):
+    if pig.startswith('s3://'):
         pigFile = pig
     else:
         pigFile = 's3://solr-scale-tk/pig/'+pig
@@ -3334,12 +3383,13 @@ def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s
     if pipeline is None:
         pipeline = collection+'-default'
 
-    goThruProxy = bool(thruProxy)
+    secureFusion = str(thruProxy) == 'True'
+
     fusionEndpoint = ''
     for host in hosts:
         if len(fusionEndpoint) > 0:
             fusionEndpoint += ','
-        if goThruProxy:
+        if secureFusion is True:
             fusionEndpoint += 'http://'+host+':8764/api/apollo/index-pipelines/'+pipeline+'/collections/'+collection+'/index'
         else:
             fusionEndpoint += 'http://'+host+':8765/api/v1/index-pipelines/'+pipeline+'/collections/'+collection+'/index'
@@ -3353,8 +3403,10 @@ def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s
                '-p','FUSION_USER=admin',
                '-p','FUSION_PASS=password123',
                '-p','FUSION_REALM=native',
-               '-p','FUSION_AUTH_ENABLED='+('true' if goThruProxy else 'false'),
+               '-p','FUSION_AUTH_ENABLED='+('true' if secureFusion is True else 'false'),
                '-p','SSTK_JAR=s3://sstk-dev/solr-scale-tk-0.1-exe.jar']
+
+    _status('Starting Pig JOB using args: '+str(pigArgs))
 
     pigStep = _PigStep(stepName, pig_file=pigFile, pig_args=pigArgs)
     try:
@@ -3363,7 +3415,6 @@ def emr_fusion_indexing_job(emrCluster, fusionCluster, collection='perf', pig='s
         _error('Call to add_jobflow_steps for job flow '+job_flow_id+' failed due to: '+str(se)+'! Will retry in 10 seconds ...')
         time.sleep(10)
         emr.add_jobflow_steps(job_flow_id, [pigStep])
-
     return stepName
 
 def _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster):
@@ -3450,11 +3501,10 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
     deploy_config(cluster,'perf','perf_js')
     _status('Starting Fusion services across cluster ...')
     fusion_start(cluster,api=n,connectors=1,ui=n,yjp_path=yjp_path_fusion,apiJavaMem=apiJavaMem)
-
     hosts = _lookup_hosts(cluster)
 
     # make sure the proxy / UI service is up before making changes with the API
-    _wait_to_see_fusion_proxy_up(hosts[0], 60)
+    _wait_to_see_fusion_proxy_up(cluster, hosts[0], 60)
     _status('Fusion proxy / UI service is up, commencing with post-startup configuration steps ...')
 
     # set the initial password for the new Fusion cluster
@@ -3471,27 +3521,16 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
 
     collection = 'perf'
 
-    fusion_new_collection(cluster,name=collection,rf=2,shards=n,conf='perf')
-    fusion_new_collection(cluster,name=collection+'_js',rf=2,shards=n,conf='perf_js')
+    repFact = 1
+    numShards = n * 2
+    fusion_new_collection(cluster,name=collection,rf=repFact,shards=numShards,conf='perf')
+    _status('Created new collection: '+collection)
+    fusion_new_collection(cluster,name=collection+'_js',rf=repFact,shards=numShards,conf='perf_js')
+    _status('Created new collection: '+collection+'_js')
 
     perfPipelineDef = """{
   "id" : "perf",
   "stages" : [ {
-    "type" : "field-mapping",
-    "id" : "mapping-default",
-    "mappings" : [ {
-      "source" : "/(.*?)lat(itude)?$/",
-      "target" : "$1_lat_lon",
-      "operation" : "move"
-    }, {
-      "source" : "/(.*?)lon(gitude)?$/",
-      "target" : "$1_lat_lon",
-      "operation" : "move"
-    } ],
-    "skip" : false,
-    "label" : "field-mapping",
-    "type" : "field-mapping"
-  }, {
     "type" : "solr-index",
     "id" : "perf-to-solr",
     "enforceSchema" : true,
@@ -3506,24 +3545,9 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
     perfJsPipelineDef = """{
   "id" : "perf_js",
   "stages" : [ {
-    "type" : "field-mapping",
-    "id" : "perf-js-mapping-default",
-    "mappings" : [ {
-      "source" : "/(.*?)lat(itude)?$/",
-      "target" : "$1_lat_lon",
-      "operation" : "move"
-    }, {
-      "source" : "/(.*?)lon(gitude)?$/",
-      "target" : "$1_lat_lon",
-      "operation" : "move"
-    } ],
-    "skip" : false,
-    "label" : "field-mapping",
-    "type" : "field-mapping"
-  }, {
     "type" : "javascript-index",
     "id" : "perf-js-javascript",
-    "script" : "function(doc) { var id = doc.getId(); var api = doc.getFirstFieldValue('_lw_data_source_s'); if (!api) api = 'fusion_performance_tests'; doc.setId(id + '_' + api); doc.addField('logical_collection_s', api); doc.addField('display_name_s', api.slice(36)); return doc; }",
+    "script" : "function doWork(doc) { var id = doc.getId(); var api = doc.getFirstFieldValue('_lw_data_source_s'); if (!api) api = 'perf'; doc.setId(id + '_' + api); doc.addField('foo_s', api); return doc; }",
     "skip" : false,
     "label" : "JavaScript",
     "type" : "javascript-index"
@@ -3555,10 +3579,26 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
     numHadoopNodes = 6
     numReducers = numHadoopNodes * 3 # 4 reducer slots per m1.xlarge
     emr_new_cluster(emrCluster,region=region,num=numHadoopNodes)
-    tag_emr_instances(emrCluster,'Fusion Performance Testing',region)
+    tag_emr_instances(emrCluster,'Fusion Performance Testing',region,customTags='{"CostCenter":"eng"}')
+
+    # now run the performance test steps in the EMR workflow
+    fusion_perf_test_steps(emrCluster,cluster,collection,numShards,repFact,numReducers,bufferSize,region,maxWaitSecs,index_solr_too,enable_partition)
+
+    if keepRunning:
+        _warn('Keep running flag is true, so the provisioned EC2 nodes and EMR cluster will not be shut down. You are responsible for stopping these services manually using:\n\tfab kill:'+cluster+'\n\tfab terminate_jobflow:'+emrCluster)
+    else:
+        kill(cluster)
+        # terminate the EMR cluster when we're done
+        terminate_jobflow(emrCluster, region)
+
+def fusion_perf_test_steps(emrCluster,cluster,collection='perf',numShards=6,repFact=1,numReducers=18,bufferSize=3000,region='us-east-1',maxWaitSecs=2700,index_solr_too=False,enable_partition=None):
+
+    hosts = _lookup_hosts(cluster)
+
     clear_collection(cluster, collection)
     stepName = emr_fusion_indexing_job(emrCluster, cluster, pipeline='perf', collection=collection,
-                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy=False)
+                                       pig='s3://sstk-dev/s3_to_fusion.pig',
+                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy='False')
 
     sstk_cfg = _get_config()
     job_flow_id = sstk_cfg['emr'][emrCluster]['job_flow_id']
@@ -3569,21 +3609,35 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
 
     if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster)== 'COMPLETED':
         # job completed ...
+        _status('Finished indexing using pipeline: perf')
         _print_step_metrics(cluster, collection)
-        report_fusion_metrics(cluster, collection)
+        #report_fusion_metrics(cluster, collection)
+
+    # now do with a JavaScript stage
+    clear_collection(cluster, 'perf_js')
+    stepName = emr_fusion_indexing_job(emrCluster, cluster, pipeline='perf_js', collection='perf_js',
+                                       pig='s3://sstk-dev/s3_to_fusion.pig',
+                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy='False')
+    if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster)== 'COMPLETED':
+        # job completed ...
+        _status('Finished indexing using pipeline: perf_js')
+        _print_step_metrics(cluster, 'perf_js')
 
     # Solr indexing step
-    if index_solr_too:
-        new_collection(cluster,name='perf-solr',rf=2,shards=n,existingConfName='perf')
+    if str(index_solr_too) == "True":
+        new_collection(cluster,name='perf-solr',rf=repFact,shards=numShards,existingConfName='perf')
+        clear_collection(cluster, 'perf-solr')
         stepName = emr_run_indexing_job(emrCluster, cluster, collection='perf-solr',
-                                       region=region, reducers=numReducers, batch_size=bufferSize)
+                                        region=region, reducers=numReducers, batch_size=bufferSize)
         if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster ) == 'COMPLETED':
             # job completed ...
             _print_step_metrics(cluster, 'perf-solr')
+            # have to compute this manually as the new Hadoop code doesn't send the indexed_at_tdt anymore
+            _status('Indexing directly to Solr completed.')
 
     if enable_partition is not None:
         _status('Running index perf test with time-based partitioning enabled ...')
-        fusion_new_collection(cluster,name='perf_tp',rf=2,shards=n,conf='perf')
+        fusion_new_collection(cluster,name='perf_tp',rf=repFact,shards=numShards,conf='perf')
         enablePartitionFeature = """{
           "enabled":true, "timestampFieldName":"timestamp1_tdt", "timePeriod":"30DAYS", "maxActivePartitions":1000, "deleteExpired":false
         }"""
@@ -3591,20 +3645,13 @@ def fusion_perf_test(cluster, n=3, keepRunning=False, instance_type='r3.2xlarge'
         _info("Enabled the partitionByTime feature for perf_tp")
         stepName = emr_fusion_indexing_job(emrCluster, cluster, pipeline='perf', collection='perf_tp',
                                            pig='s3://sstk-dev/s3_to_fusion.pig',
-                                           region=region, reducers=numReducers, batch_size=bufferSize, thruProxy=False)
+                                           region=region, reducers=numReducers, batch_size=bufferSize, thruProxy='False')
         if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster ) == 'COMPLETED':
             # job completed ...
             _print_step_metrics(cluster, 'perf_tp', usePipeline=True)
 
     # GC log analysis for fusion api service    _info("Starting gc log analysis")
     gc_log_analysis_api(cluster)
-
-    if keepRunning:
-        _warn('Keep running flag is true, so the provisioned EC2 nodes and EMR cluster will not be shut down. You are responsible for stopping these services manually using:\n\tfab kill:'+cluster+'\n\tfab terminate_jobflow:'+emrCluster)
-    else:
-        kill(cluster)
-        # terminate the EMR cluster when we're done
-        terminate_jobflow(emrCluster, region)
 
 def terminate_jobflow(emrCluster, region='us-east-1'):
     """
@@ -3628,11 +3675,21 @@ def fusion_api_up(cluster):
     """
     hosts = _lookup_hosts(cluster)
     for h in hosts:
-        isRunning = _wait_to_see_fusion_api_up(h, 1)
+        isRunning = _wait_to_see_fusion_api_up(cluster, h, 1)
         if isRunning:
             _info('Fusion API service is running on '+h)
         else:
             _info('Fusion API service is NOT responding on '+h)
+
+def fusion_proxy_up(cluster):
+    """
+    Test to see if the Fusion proxy service is running on each host in the cluster.
+    """
+    hosts = _lookup_hosts(cluster)
+    for h in hosts:
+        isRunning = _wait_to_see_fusion_proxy_up(cluster, h, 1)
+        if isRunning is False:
+            _info('Fusion Proxy/UI service is NOT responding on '+h)
 
 
 def estimate_indexing_throughput(cluster, collection, usePipeline=False):
@@ -3687,6 +3744,7 @@ def report_fusion_metrics(cluster,collection):
     for h in hosts:
         metricsResp = _fusion_api(h, 'system/metrics?pattern='+metricName)
         metricsJson = json.loads(metricsResp)
+        print(metricsJson)
         count = long(metricsJson.get("counters").get(metricName).get("count"))
         _info('Pipeline at '+h+' processed '+str(count)+' docs')
         if count > 0:
@@ -3780,7 +3838,7 @@ def fusion_patch_jars(cluster, localFusionDir, jars, n=None, localVers='2.2-SNAP
                 _status('Restarted API service on '+hosts[h]+' ... waiting up to 180 seconds to see it come back online.')
 
     for h in range(0,len(hosts)):
-        apiIsRunning = _wait_to_see_fusion_api_up(hosts[h], 180)
+        apiIsRunning = _wait_to_see_fusion_api_up(cluster, hosts[h], 180)
         if apiIsRunning is False:
             _fatal('Fusion API not responding on '+hosts[h]+'! Consult the Fusion API log for errors.')
         else:
@@ -3788,7 +3846,7 @@ def fusion_patch_jars(cluster, localFusionDir, jars, n=None, localVers='2.2-SNAP
 
     _info('JARs uploaded and patched successfully.')
     
-def tag_emr_instances(emrCluster,purpose,region='us-east-1'):
+def tag_emr_instances(emrCluster,purpose,region='us-east-1',customTags=None):
     ec2 = _provider_api()
     username = getpass.getuser()
 
@@ -3803,12 +3861,21 @@ def tag_emr_instances(emrCluster,purpose,region='us-east-1'):
 
     byTag = ec2.get_all_instances(filters={'tag:' + 'aws:elasticmapreduce:job-flow-id':job_flow_id})
     idx = 0
+
+    customTagsJson = None
+    if customTags is not None:
+        customTagsJson = json.loads(customTags)
+
     for rsrv in byTag:
         for inst in rsrv.instances:
             try:
                 inst.add_tag("Name", emrCluster+'_'+str(idx))
                 inst.add_tag('Owner', username)
                 inst.add_tag('Description', description)
+                if customTagsJson is not None:
+                    for tagName, tagValu in customTagsJson.iteritems():
+                        inst.add_tag(tagName, tagValu)
+
             except: # catch all exceptions
                 e = sys.exc_info()[0]
                 _error('Error when tagging instance %s due to: %s ... will retry in 5 seconds ...' % (inst.id, str(e)))
@@ -3816,16 +3883,22 @@ def tag_emr_instances(emrCluster,purpose,region='us-east-1'):
                 inst.add_tag("Name", emrCluster+'_'+str(idx))
                 inst.add_tag('Owner', username)
                 inst.add_tag('Description', description)
+                if customTagsJson is not None:
+                    for tagName, tagValu in customTagsJson.iteritems():
+                        inst.add_tag(tagName, tagValu)
+
             idx += 1
 
     ec2.close()
         
 
-def setup_jmeter(cluster):
+def setup_jmeter(cluster,jmeterVers='3.0'):
     hosts = _lookup_hosts(cluster)
     # stage the JMeter binary on all hosts
-    remoteTarFile = 'apache-jmeter-2.13.tgz'
+    jmeterBase = 'apache-jmeter-'+jmeterVers
+    remoteTarFile = jmeterBase+'.tgz'
     sstkJarFile = 'solr-scale-tk-0.1-exe.jar'
+    downloadUrl = 'http://mirrors.ocf.berkeley.edu/apache//jmeter/binaries/apache-jmeter-'+jmeterVers+'.tgz'
 
     if os.path.isfile('target/'+sstkJarFile) is False:
         _fatal('target/'+sstkJarFile+' not found! Please do: mvn clean package before running this command')
@@ -3833,8 +3906,8 @@ def setup_jmeter(cluster):
     with settings(host_string=hosts[0]):
         _status('Uploading '+sstkJarFile+' to '+hosts[0]+' ... this may take a few minutes ...')
         put('target/solr-scale-tk-0.1-exe.jar', 'solr-scale-tk-0.1-exe.jar')
-        _status('Downloading JMeter 2.13 from Apache Mirror ...')
-        run('wget http://apache.cs.utah.edu/jmeter/binaries/apache-jmeter-2.13.tgz -O '+remoteTarFile)
+        _status('Downloading JMeter '+jmeterVers+' from Apache Mirror ...')
+        run('wget '+downloadUrl+' -O '+remoteTarFile)
         run('mkdir -p %s/.ssh' % user_home)
         put(_env(cluster,'ssh_keyfile_path_on_local'), '%s/.ssh' % user_home)
         run('chmod 600 '+_env(cluster,'ssh_keyfile_path_on_local'))
@@ -3846,7 +3919,8 @@ def setup_jmeter(cluster):
     for host in hosts:
         with settings(host_string=host):
             run('tar zxf '+remoteTarFile)
-            run('mv solr-scale-tk-0.1-exe.jar apache-jmeter-2.13/lib/ext')
+            run('ln -s '+jmeterBase+' jmeter')
+            run('mv solr-scale-tk-0.1-exe.jar jmeter/lib/ext')
 
 def update_jmeter_sstk_jar(cluster):
     hosts = _lookup_hosts(cluster)
@@ -3864,21 +3938,22 @@ def update_jmeter_sstk_jar(cluster):
                 run('scp -o StrictHostKeyChecking=no -i %s %s %s@%s:%s' % (_env(cluster,'ssh_keyfile_path_on_local'), sstkJarFile, ssh_user, hosts[h], sstkJarFile))
     for host in hosts:
         with settings(host_string=host):
-            run('mv solr-scale-tk-0.1-exe.jar apache-jmeter-2.13/lib/ext')
+            run('mv solr-scale-tk-0.1-exe.jar jmeter/lib/ext')
 
-
-
-def run_jmeter(cluster,fusionCluster,testPlan,collection,fusionPassword,mode='fusion',numThreads=5,numQueriesPerThread=10000,pipeline=None,thruProxy=True):
+def run_jmeter(cluster,fusionCluster,testPlan,collection,fusionPassword=None,mode='fusion',numThreads=5,numQueriesPerThread=10000,pipeline=None,thruProxy=True):
     if os.path.isfile(testPlan) is False:
         _fatal('JMeter test plan file '+testPlan+' not found!')
     hosts = _lookup_hosts(cluster)
 
-    remoteJmeterDir = 'apache-jmeter-2.13'
+    if fusionPassword is None:
+        fusionPassword = "password123"
+
+    remoteJmeterDir = 'jmeter'
 
     if pipeline is None:
         pipeline = collection+'-default'
 
-    goThruProxy = bool(thruProxy)
+    goThruProxy = thruProxy == "true" or thruProxy == "True"
     fusionEndpoint = ''
     if cluster != fusionCluster:
         fusionHosts = _lookup_hosts(fusionCluster)
@@ -3914,20 +3989,20 @@ log4j.logger.shaded.apache.http.client=DEBUG
     for host in hosts:
         with settings(host_string=host):
             put(testPlan,testPlan)
-            run('rm -f jmeter.log jmeter.out slow_queries.txt no_results.txt || true')
+            run('rm -f jmeter.log root.log jmeter.out slow_queries.txt no_results.txt || true')
             run('rm -f ' + remoteLog4JPropsFile)
             _fab_append(remoteLog4JPropsFile, log4Jcfg)
 
             killJmeter = """
-CHECK_PID=`ps auxww | grep -w java | grep -v grep | awk '{print $2}' | sort -r | tr -d ' '`
+CHECK_PID=`ps auxww | grep -w ApacheJMeter | grep -v grep | awk '{print $2}' | sort -r | tr -d ' '`
 if [ "$CHECK_PID" != "" ]; then
   kill -9 $CHECK_PID
   echo "killed $CHECK_PID"
 fi
             """
             logOpts = '-Dlog4j.debug -Dlog4j.configuration=file:'+remoteLog4JPropsFile
-            rmiOpts = 'export JVM_ARGS="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.port=18984 -Dcom.sun.management.jmxremote.rmi.port=18984 -Djava.rmi.server.hostname='+host+' '+logOpts+'"'
-            startJmeter = ('%s/bin/jmeter -JqueryThreads=%d -JnumQueriesPerThread=%d -JZK_HOST=%s -JCOLLECTION=%s -JMODE=%s "-JFUSION_QUERY_ENDPOINTS=%s" -JFUSION_PASS=%s -n -t %s' % (remoteJmeterDir, numThreads, numQueriesPerThread, zkHost, collection, mode, fusionEndpoint, fusionPassword, testPlan))
+            rmiOpts = 'export JVM_ARGS="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.port=15984 -Dcom.sun.management.jmxremote.rmi.port=15984 -Djava.rmi.server.hostname='+host+' '+logOpts+'"'
+            startJmeter = ('%s/bin/jmeter -JqueryThreads=%d -JnumQueriesPerThread=%d -n -t %s' % (remoteJmeterDir, numThreads, numQueriesPerThread, testPlan))
             runJmeterSh=("""#!/bin/sh
 %s
 %s
@@ -3942,7 +4017,7 @@ def print_fusion_endpoints(cluster,collection,pipeline=None,thruProxy=True):
     if pipeline is None:
         pipeline = collection+'-default'
 
-    goThruProxy = bool(thruProxy)
+    goThruProxy = str(thruProxy) == 'true' or str(thruProxy) == 'True'
     fusionEndpoint = ''
     fusionHosts = _lookup_hosts(cluster)
     for fh in fusionHosts:
@@ -4011,11 +4086,13 @@ spark.executor.extraClassPath      %s/%s
 
 def fusion_time_perf_test(cluster,emrCluster,job_flow_id,region='us-east-1', maxWaitSecs=2700):
     bufferSize = 3000
-    numReducers = 24
+    numReducers = 18
+    repFact = 1
+    numShards = 6
 
     hosts = _lookup_hosts(cluster)
     _status('Running index perf test with time-based partitioning enabled ...')
-    fusion_new_collection(cluster,name='perf_tp',rf=2,shards=n,conf='perf')
+    fusion_new_collection(cluster,name='perf_tp',rf=repFact,shards=numShards,conf='perf')
     enablePartitionFeature = """{
           "enabled":true, "timestampFieldName":"timestamp1_tdt", "timePeriod":"30DAYS", "maxActivePartitions":1000, "deleteExpired":false
         }"""
@@ -4023,8 +4100,33 @@ def fusion_time_perf_test(cluster,emrCluster,job_flow_id,region='us-east-1', max
     _info("Enabled the partitionByTime feature for perf_tp")
     stepName = emr_fusion_indexing_job(emrCluster, cluster, pipeline='perf', collection='perf_tp',
                                        pig='s3://sstk-dev/s3_to_fusion.pig',
-                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy=False)
+                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy='False')
     emr = boto.emr.connect_to_region(region)
     if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster ) == 'COMPLETED':
         # job completed ...
         _print_step_metrics(cluster, 'perf_tp', usePipeline=True)
+
+def fusion_index_signals(cluster,numReducers=18,bufferSize=3000,region='us-east-1',maxWaitSecs=7200):
+
+    hosts = _lookup_hosts(cluster)
+
+    emrCluster = cluster + 'EMR'
+    collection = 'perf_signals'
+
+    # enable the signals feature on the perf collection
+    enableSignalsFeature = '{"enabled":true, "params":{"replicationFactor":1,"numShards":9,"maxShardsPerNode":3}}'
+    _fusion_api(hosts[0], 'collections/perf/features/signals', 'PUT', enableSignalsFeature)
+    clear_collection(cluster, collection)
+    clear_collection(cluster, collection+'_aggr')
+    stepName = emr_fusion_indexing_job(emrCluster, cluster, pipeline='perf', collection=collection,
+                                       input='s3://solr-scale-tk/pig/output/syn130m',
+                                       pig='s3://sstk-dev/s3_to_fusion_sigs.pig',
+                                       region=region, reducers=numReducers, batch_size=bufferSize, thruProxy='False')
+    sstk_cfg = _get_config()
+    job_flow_id = sstk_cfg['emr'][emrCluster]['job_flow_id']
+    _info('EMR job flow is '+job_flow_id)
+
+    emr = boto.emr.connect_to_region(region)
+    if _check_step_status(emr, job_flow_id, stepName, maxWaitSecs, cluster)== 'COMPLETED':
+        _status('Finished indexing 130m signals to '+collection)
+        _print_step_metrics(cluster, collection)

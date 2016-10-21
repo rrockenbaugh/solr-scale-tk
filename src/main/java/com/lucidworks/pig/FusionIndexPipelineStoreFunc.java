@@ -41,8 +41,8 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
   // Enum for interfacing with the Hadoop counter framework
   public static enum Counters {
     NUM_DOCS_PROCESSED, NUM_DOCS_INDEXED, NUM_TUPLE_TO_JSON_CONVERSION_ERRORS,
-    NUM_FAILURES, NUM_INPUT_TUPLES_NOT_MATCHING_SCHEMA, SLOW_BATCHES, SLOW_INDEX_REQUESTS,
-    NUM_COMMITS, BATCHES_TIMED_OUT, BATCHES_FAILED, BATCHES_RECOVERED
+    NUM_FAILURES, NUM_INPUT_TUPLES_NOT_MATCHING_SCHEMA, SLOW_BATCHES,
+    BATCHES_TIMED_OUT, BATCHES_FAILED, BATCHES_RECOVERED
   }
 
   static {
@@ -57,6 +57,10 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
   protected String fusionPass;
   protected String fusionRealm;
   protected String endpoints;
+  protected String fusionIndexPipelinePath;
+  protected String fusionHostList;
+  protected String contentType;
+
   private ExecutorService executor = null;
 
   protected List batch = new ArrayList();
@@ -78,12 +82,17 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
   protected boolean fusionAuthEnabled = true;
 
   public FusionIndexPipelineStoreFunc(String endpoints, String batchSize, String fusionAuthEnabled, String fusionUser, String fusionPass, String fusionRealm) throws SolrServerException, IOException {
+    this(endpoints, batchSize, fusionAuthEnabled, fusionUser, fusionPass, fusionRealm, FusionPipelineClient.PIPELINE_DOC_CONTENT_TYPE);
+  }
+
+  public FusionIndexPipelineStoreFunc(String endpoints, String batchSize, String fusionAuthEnabled, String fusionUser, String fusionPass, String fusionRealm, String contentType) throws SolrServerException, IOException {
     this.fusionUser = fusionUser;
     this.fusionPass = fusionPass;
     this.fusionRealm = fusionRealm;
     this.endpoints = endpoints;
     this.batchSize = Integer.parseInt(batchSize);
     this.fusionAuthEnabled = "true".equals(fusionAuthEnabled);
+    this.contentType = (contentType != null) ? contentType : FusionPipelineClient.PIPELINE_DOC_CONTENT_TYPE;
   }
 
   public void putNext(Tuple input) throws IOException {
@@ -167,7 +176,7 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
     Callable<Object> task = new Callable<Object>() {
       public Object call() {
         try {
-          FusionIndexPipelineStoreFunc.this.pipelineClient.postBatchToPipeline(theBatch);
+          FusionIndexPipelineStoreFunc.this.pipelineClient.postBatchToPipeline(fusionIndexPipelinePath, theBatch, contentType);
           return Boolean.TRUE;
         } catch (Exception exc) {
           log.error("{In java.util.concurrent.Callable} Failed to send batch after " + timeoutSecs + " secs due to: " + exc.toString());
@@ -266,7 +275,7 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
   protected void index(Map<String,Object> doc) throws Exception {
     List list = new ArrayList();
     list.add(doc);
-    pipelineClient.postBatchToPipeline(list);
+    pipelineClient.postBatchToPipeline(fusionIndexPipelinePath, list, contentType);
   }
 
   protected void commit() {
@@ -478,8 +487,14 @@ public class FusionIndexPipelineStoreFunc extends StoreFunc {
   @SuppressWarnings("unchecked")
   @Override
   public void prepareToWrite(RecordWriter writer) throws IOException {
+
+    fusionHostList = FusionPipelineClient.extractFusionHosts(endpoints);
+    log.info("Configured Fusion host and port list: "+fusionHostList);
+    fusionIndexPipelinePath = FusionPipelineClient.extractPath(endpoints);
+    log.info("Configured Fusion index pipelie path: "+fusionIndexPipelinePath);
+
     try {
-      pipelineClient = fusionAuthEnabled ? new FusionPipelineClient(endpoints, fusionUser, fusionPass, fusionRealm) : new FusionPipelineClient(endpoints);
+      pipelineClient = fusionAuthEnabled ? new FusionPipelineClient(fusionHostList, fusionUser, fusionPass, fusionRealm) : new FusionPipelineClient(fusionHostList);
     } catch (Exception e) {
       log.error("Unable to connect to: " + endpoints);
       throw new IOException("Unable to connect to: " + endpoints, e);

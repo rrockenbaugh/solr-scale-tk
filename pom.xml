@@ -73,15 +73,25 @@
                             </filters>
                             <artifactSet>
                                 <excludes>
+                                    <exclude>org.apache.curator:*</exclude>
                                     <exclude>org.apache.hadoop:*</exclude>
                                     <exclude>org.apache.pig:*</exclude>
                                     <exclude>org.bouncycastle:*</exclude>
                                     <exclude>org.apache.tika:*</exclude>
                                     <exclude>org.objectweb.asm:*</exclude>
                                     <exclude>asm:*</exclude>
+                                    <exclude>org.apache.pdfbox:*</exclude>
                                 </excludes>
                             </artifactSet>
                             <relocations>
+                                <relocation>
+                                    <pattern>org.jboss.netty</pattern>
+                                    <shadedPattern>shaded.jboss.netty</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.zookeeper</pattern>
+                                    <shadedPattern>shaded.apache.zookeeper</shadedPattern>
+                                </relocation>
                                 <relocation>
                                     <pattern>org.apache.http</pattern>
                                     <shadedPattern>shaded.apache.http</shadedPattern>
@@ -117,6 +127,10 @@
                                 <relocation>
                                     <pattern>org.apache.commons.math3</pattern>
                                     <shadedPattern>shaded.apache.commons.math3</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.commons.csv</pattern>
+                                    <shadedPattern>shaded.apache.commons.csv</shadedPattern>
                                 </relocation>
                             </relocations>
                         </configuration>
@@ -163,7 +177,17 @@
         <dependency>
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-solrj</artifactId>
-            <version>5.4.1</version>
+            <version>5.5.2</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.codehaus.woodstox</groupId>
+                    <artifactId>stax2-api</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.codehaus.woodstox</groupId>
+                    <artifactId>woodstox-core-asl</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.codahale.metrics</groupId>
@@ -203,8 +227,8 @@
         <dependency>
             <groupId>org.apache.jmeter</groupId>
             <artifactId>ApacheJMeter_java</artifactId>
-            <version>2.13</version>
-            <scope>compile</scope>
+            <version>3.0</version>
+            <scope>provided</scope>
             <exclusions>
                 <exclusion>
                     <groupId>com.fifesoft</groupId>
@@ -274,6 +298,11 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-math3</artifactId>
             <version>3.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.0</version>
         </dependency>
     </dependencies>
 </project>
